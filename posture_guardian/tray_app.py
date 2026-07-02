@@ -1,4 +1,6 @@
 import datetime
+import subprocess
+import sys
 import threading
 import time
 
@@ -7,7 +9,7 @@ import pystray
 from PIL import Image, ImageDraw
 
 from posture_guardian import config, storage
-from posture_guardian.alerts import ALERT_MESSAGES, AlertDebouncer, show_overlay
+from posture_guardian.alerts import ALERT_MESSAGES, AlertDebouncer
 from posture_guardian.calibration import run_calibration
 from posture_guardian.posture_engine import PoseEngine, landmarks_to_metrics
 from posture_guardian.scoring import PostureMetrics, Thresholds, classify_state, compute_score
@@ -30,6 +32,8 @@ class PostureGuardianApp:
         )
         self._paused = threading.Event()
         self._stop = threading.Event()
+        self._calibrating = threading.Event()
+        self._calibrate_lock = threading.Lock()
         self._icon = pystray.Icon(
             "posture_guardian",
             _make_icon_image("grey"),
@@ -43,11 +47,21 @@ class PostureGuardianApp:
         )
 
     def _on_calibrate(self, icon, item):
-        cap = cv2.VideoCapture(0)
-        engine = PoseEngine()
-        run_calibration(self.conn, cap, engine, config.CALIBRATION_FRAME_COUNT, config.CALIBRATION_MAX_STDEV)
-        cap.release()
-        engine.close()
+        if not self._calibrate_lock.acquire(blocking=False):
+            return  # already calibrating; ignore double-click
+        try:
+            self._calibrating.set()
+            time.sleep(0.15)  # give detection loop time to release the camera
+            cap = cv2.VideoCapture(0)
+            engine = PoseEngine()
+            try:
+                run_calibration(self.conn, cap, engine, config.CALIBRATION_FRAME_COUNT, config.CALIBRATION_MAX_STDEV)
+            finally:
+                cap.release()
+                engine.close()
+        finally:
+            self._calibrating.clear()
+            self._calibrate_lock.release()
 
     def _on_show_dashboard(self, icon, item):
         from posture_guardian.dashboard import show_dashboard
@@ -65,7 +79,7 @@ class PostureGuardianApp:
         icon.stop()
 
     def _detection_loop(self):
-        cap = cv2.VideoCapture(0)
+        cap = None
         engine = PoseEngine()
         good_seconds = 0.0
         monitored_seconds = 0.0
@@ -75,10 +89,18 @@ class PostureGuardianApp:
         while not self._stop.is_set():
             loop_start = time.monotonic()
 
-            if self._paused.is_set():
+            if self._paused.is_set() or self._calibrating.is_set():
+                # Release camera so calibration (or pause) can use it
+                if cap is not None:
+                    cap.release()
+                    cap = None
                 self._icon.icon = _make_icon_image("grey")
                 time.sleep(frame_interval)
                 continue
+
+            # Ensure camera is open
+            if cap is None:
+                cap = cv2.VideoCapture(0)
 
             ok, frame = cap.read()
             if not ok:
@@ -108,7 +130,9 @@ class PostureGuardianApp:
             storage.log_event(self.conn, datetime.datetime.now().isoformat(), state)
 
             if self.debouncer.update(state) and state in ALERT_MESSAGES:
-                threading.Thread(target=show_overlay, args=(ALERT_MESSAGES[state],), daemon=True).start()
+                subprocess.Popen(
+                    [sys.executable, "-m", "posture_guardian.overlay_alert", ALERT_MESSAGES[state]]
+                )
 
             if time.monotonic() - last_flush >= config.FLUSH_INTERVAL_SECONDS:
                 today = datetime.date.today().isoformat()
@@ -120,7 +144,8 @@ class PostureGuardianApp:
             elapsed = time.monotonic() - loop_start
             time.sleep(max(0.0, frame_interval - elapsed))
 
-        cap.release()
+        if cap is not None:
+            cap.release()
         engine.close()
 
     def start(self):
