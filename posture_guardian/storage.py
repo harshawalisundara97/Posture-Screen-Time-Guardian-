@@ -1,4 +1,5 @@
 import sqlite3
+from pathlib import Path
 from typing import Optional
 
 SCHEMA = """
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS events (
 
 
 def init_db(db_path: str) -> sqlite3.Connection:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.executescript(SCHEMA)
     conn.commit()
