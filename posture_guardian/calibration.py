@@ -24,7 +24,7 @@ def is_motion_too_high(samples: list[PostureMetrics], max_stdev: float) -> bool:
     )
 
 
-def run_calibration(conn, cap, engine, frame_count: int, max_stdev: float) -> bool:
+def run_calibration(conn, cap, engine, frame_count: int, max_stdev: float, timeout_seconds: float = 30.0) -> bool:
     print("Sit in your normal, good posture. Capturing in 3...")
     time.sleep(1)
     print("2...")
@@ -34,9 +34,14 @@ def run_calibration(conn, cap, engine, frame_count: int, max_stdev: float) -> bo
     print("Capturing now, hold still...")
 
     samples = []
+    deadline = time.monotonic() + timeout_seconds
     while len(samples) < frame_count:
+        if time.monotonic() > deadline:
+            print("Calibration timed out — camera produced no usable frames. Please try again.")
+            return False
         ok, frame = cap.read()
         if not ok:
+            time.sleep(0.1)
             continue
         landmarks = engine.process_frame(frame)
         if landmarks is None:

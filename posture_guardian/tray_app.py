@@ -12,14 +12,22 @@ from posture_guardian import config, storage
 from posture_guardian.alerts import ALERT_MESSAGES, AlertDebouncer
 from posture_guardian.calibration import run_calibration
 from posture_guardian.posture_engine import PoseEngine, landmarks_to_metrics
-from posture_guardian.scoring import PostureMetrics, Thresholds, classify_state, compute_score
+from posture_guardian.scoring import PostureMetrics, Thresholds, classify_state
+
+_ICON_CACHE: dict = {}
 
 
 def _make_icon_image(color: str) -> Image.Image:
-    image = Image.new("RGB", (64, 64), "black")
-    draw = ImageDraw.Draw(image)
-    draw.ellipse((16, 16, 48, 48), fill=color)
-    return image
+    if color not in _ICON_CACHE:
+        image = Image.new("RGB", (64, 64), "black")
+        draw = ImageDraw.Draw(image)
+        draw.ellipse((16, 16, 48, 48), fill=color)
+        _ICON_CACHE[color] = image
+    return _ICON_CACHE[color]
+
+
+def _spawn_overlay(message: str) -> None:
+    subprocess.Popen([sys.executable, "-m", "posture_guardian.overlay_alert", message])
 
 
 class PostureGuardianApp:
@@ -52,10 +60,12 @@ class PostureGuardianApp:
         try:
             self._calibrating.set()
             time.sleep(0.15)  # give detection loop time to release the camera
+            _spawn_overlay("Calibrating — sit up straight and hold still")
             cap = cv2.VideoCapture(0)
             engine = PoseEngine()
             try:
-                run_calibration(self.conn, cap, engine, config.CALIBRATION_FRAME_COUNT, config.CALIBRATION_MAX_STDEV)
+                ok = run_calibration(self.conn, cap, engine, config.CALIBRATION_FRAME_COUNT, config.CALIBRATION_MAX_STDEV)
+                _spawn_overlay("Calibration saved" if ok else "Calibration failed — hold still and try again")
             finally:
                 cap.release()
                 engine.close()
@@ -130,9 +140,7 @@ class PostureGuardianApp:
             storage.log_event(self.conn, datetime.datetime.now().isoformat(), state)
 
             if self.debouncer.update(state) and state in ALERT_MESSAGES:
-                subprocess.Popen(
-                    [sys.executable, "-m", "posture_guardian.overlay_alert", ALERT_MESSAGES[state]]
-                )
+                _spawn_overlay(ALERT_MESSAGES[state])
 
             if time.monotonic() - last_flush >= config.FLUSH_INTERVAL_SECONDS:
                 today = datetime.date.today().isoformat()
@@ -144,14 +152,22 @@ class PostureGuardianApp:
             elapsed = time.monotonic() - loop_start
             time.sleep(max(0.0, frame_interval - elapsed))
 
+        if monitored_seconds > 0:
+            today = datetime.date.today().isoformat()
+            storage.upsert_daily_stats(self.conn, today, good_seconds, monitored_seconds)
         if cap is not None:
             cap.release()
         engine.close()
 
     def start(self):
-        thread = threading.Thread(target=self._detection_loop, daemon=True)
-        thread.start()
+        self._thread = threading.Thread(target=self._detection_loop, daemon=True)
+        self._thread.start()
         self._icon.run()
+        # icon.run() returned (Quit clicked): let the detection loop finish its
+        # current iteration, then close the DB connection cleanly.
+        self._stop.set()
+        self._thread.join(timeout=3.0)
+        self.conn.close()
 
     def stop(self):
         self._stop.set()
