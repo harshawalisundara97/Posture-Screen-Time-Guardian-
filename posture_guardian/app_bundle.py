@@ -18,6 +18,8 @@ def build_info_plist_xml(bundle_id: str, executable_name: str, icon_file: str) -
     <string>APPL</string>
     <key>LSUIElement</key>
     <true/>
+    <key>LSRequiresNativeExecution</key>
+    <true/>
 </dict>
 </plist>
 """
@@ -31,6 +33,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 LOG_PATH="{log_path}"
 mkdir -p "$(dirname "$LOG_PATH")"
 : > "$LOG_PATH"
+cd "$PROJECT_ROOT"
 "$PROJECT_ROOT/.venv/bin/python" -m posture_guardian.main 2>> "$LOG_PATH"
 STATUS=$?
 if [ "$STATUS" -ne 0 ]; then

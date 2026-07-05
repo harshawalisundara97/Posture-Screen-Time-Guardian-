@@ -12,6 +12,7 @@ def test_build_info_plist_xml_contains_required_keys():
     assert "<key>CFBundleIconFile</key>" in xml
     assert "<string>icon.icns</string>" in xml
     assert "<key>LSUIElement</key>" in xml
+    assert "<key>LSRequiresNativeExecution</key>" in xml
     assert "<true/>" in xml
 
 
